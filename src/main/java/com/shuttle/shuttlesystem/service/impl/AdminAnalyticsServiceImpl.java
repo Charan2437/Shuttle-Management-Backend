@@ -7,17 +7,23 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import com.shuttle.shuttlesystem.service.AdminAnalyticsService;
+import com.shuttle.shuttlesystem.service.CacheService;
 
 @Service
 public class AdminAnalyticsServiceImpl implements AdminAnalyticsService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    
+    @Autowired
+    private CacheService cacheService;
 
     @Override
+    @Cacheable(value = "analytics", key = "'overview-' + #fromDate + '-' + #toDate")
     public Map<String, Object> getOverview(String fromDate, String toDate) {
         List<Object> params = new ArrayList<>();
         StringBuilder where = new StringBuilder(" WHERE (bst.name = 'completed' OR bst.name = 'boarded') ");
@@ -75,6 +81,7 @@ public class AdminAnalyticsServiceImpl implements AdminAnalyticsService {
     }
 
     @Override
+    @Cacheable(value = "analytics", key = "'route-analytics-' + #fromDate + '-' + #toDate")
     public Map<String, Object> getRouteAnalytics(String fromDate, String toDate) {
         List<Object> params = new ArrayList<>();
         StringBuilder where = new StringBuilder(" WHERE 1=1 ");
@@ -130,6 +137,7 @@ public class AdminAnalyticsServiceImpl implements AdminAnalyticsService {
     }
 
     @Override
+    @Cacheable(value = "analytics", key = "'student-analytics-' + #fromDate + '-' + #toDate")
     public Map<String, Object> getStudentAnalytics(String fromDate, String toDate) {
         List<Object> params = new ArrayList<>();
         StringBuilder bookingWhere = new StringBuilder(" WHERE 1=1 ");

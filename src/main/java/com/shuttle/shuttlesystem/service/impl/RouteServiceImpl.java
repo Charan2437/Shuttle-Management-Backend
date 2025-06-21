@@ -13,6 +13,8 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +30,7 @@ import com.shuttle.shuttlesystem.repository.RouteRepository;
 import com.shuttle.shuttlesystem.repository.RouteStopRepository;
 import com.shuttle.shuttlesystem.repository.ShuttleRepository;
 import com.shuttle.shuttlesystem.repository.StopRepository;
+import com.shuttle.shuttlesystem.service.CacheService;
 import com.shuttle.shuttlesystem.service.RouteService;
 
 @Service
@@ -44,8 +47,11 @@ public class RouteServiceImpl implements RouteService {
     private JdbcTemplate jdbcTemplate;
     @Autowired
     private ShuttleRepository shuttleRepository;
+    @Autowired
+    private CacheService cacheService;
 
     @Override
+    @Cacheable(value = "routes", key = "'all'")
     public List<RouteWithStopsAndHoursDTO> getAllRoutes() {
         List<Route> routes = routeRepository.findAll();
         List<RouteWithStopsAndHoursDTO> result = new ArrayList<>();
@@ -56,6 +62,7 @@ public class RouteServiceImpl implements RouteService {
     }
 
     @Override
+    @Cacheable(value = "routes", key = "#id.toString()")
     public RouteWithStopsAndHoursDTO getRouteById(UUID id) {
         Route route = routeRepository.findById(id).orElseThrow();
         return assembleRouteDTO(route);
@@ -63,6 +70,7 @@ public class RouteServiceImpl implements RouteService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "routes", allEntries = true)
     public RouteWithStopsAndHoursDTO createRoute(RouteWithStopsAndHoursDTO dto) {
         try {
             System.out.println("Creating route with name: " + dto.name);
@@ -137,6 +145,9 @@ public class RouteServiceImpl implements RouteService {
                 }
             }
             
+            // Invalidate related caches
+            cacheService.invalidateRouteCaches();
+            
             return result;
             
         } catch (Exception e) {
@@ -148,6 +159,7 @@ public class RouteServiceImpl implements RouteService {
 
     @Override
     @Transactional
+    @CacheEvict(value = "routes", key = "#id.toString()")
     public RouteWithStopsAndHoursDTO updateRoute(UUID id, RouteWithStopsAndHoursDTO dto) {
         Route route = routeRepository.findById(id).orElseThrow();
         route.setName(dto.name);
@@ -202,15 +214,20 @@ public class RouteServiceImpl implements RouteService {
                 routeOperatingHourRepository.save(roh);
             }
         }
+        
+        // Invalidate related caches
+        cacheService.invalidateRouteCaches();
+        
         return assembleRouteDTO(route);
     }
 
     @Override
     @Transactional
+    @CacheEvict(value = "routes", allEntries = true)
     public void deleteRoute(UUID id) {
-        routeStopRepository.deleteByRouteId(id);
-        routeOperatingHourRepository.deleteByRouteId(id);
         routeRepository.deleteById(id);
+        // Invalidate related caches
+        cacheService.invalidateRouteCaches();
     }
 
     public Object optimizeRoutes(UUID startStopId, UUID endStopId, String departureTime, int k) {

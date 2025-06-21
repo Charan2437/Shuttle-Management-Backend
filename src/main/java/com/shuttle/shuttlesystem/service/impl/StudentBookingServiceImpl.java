@@ -8,20 +8,27 @@ import java.util.Map;
 import java.util.UUID;
 
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.shuttle.shuttlesystem.dto.BookingConfirmRequestDTO;
+import com.shuttle.shuttlesystem.service.CacheService;
 import com.shuttle.shuttlesystem.service.StudentBookingService;
 
 @Service
 public class StudentBookingServiceImpl implements StudentBookingService {
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    
+    @Autowired
+    private CacheService cacheService;
 
     @Override
     @Transactional
+    @CacheEvict(value = {"bookings", "student-stats", "analytics"}, allEntries = true)
     public Map<String, Object> confirmBooking(BookingConfirmRequestDTO request, String email) {
         Map<String, Object> result = new HashMap<>();
         try {
@@ -63,38 +70,33 @@ public class StudentBookingServiceImpl implements StudentBookingService {
             // 6. Create main booking record
             UUID bookingId = UUID.randomUUID();
             String bookingReference = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
-            BookingConfirmRequestDTO.Leg firstLeg = request.legs.get(0);
-            UUID statusId = jdbcTemplate.queryForObject(
-                "SELECT id FROM booking_status_types WHERE name = 'confirmed'",
-                new Object[]{}, UUID.class);
-            // Parse scheduledTime to Timestamp
-            java.sql.Timestamp scheduledTimestamp = java.sql.Timestamp.valueOf(firstLeg.scheduledTime.replace("T", " "));
             jdbcTemplate.update(
-                "INSERT INTO bookings (id, student_id, route_id, from_stop_id, to_stop_id, scheduled_time, status_id, points_deducted, booking_reference, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now())",
-                bookingId, studentId, UUID.fromString(firstLeg.routeId), UUID.fromString(firstLeg.fromStopId), UUID.fromString(firstLeg.toStopId), scheduledTimestamp, statusId, request.totalCost, bookingReference);
-            // 7. If transfer, create transfer_bookings records
-            String firstFromStopId = request.legs.get(0).fromStopId;
-            String lastToStopId = request.legs.get(request.legs.size() - 1).toStopId;
-            for (int i = 1; i < request.legs.size(); i++) {
-                BookingConfirmRequestDTO.Leg prev = request.legs.get(i - 1);
-                // transfer_stop_id is the previous leg's toStopId
-                jdbcTemplate.update(
-                    "INSERT INTO transfer_bookings (id, main_booking_id, from_stop_id, to_stop_id, transfer_stop_id, estimated_wait_time, transfer_order, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, now())",
-                    UUID.randomUUID(), bookingId, UUID.fromString(firstFromStopId), UUID.fromString(lastToStopId), UUID.fromString(prev.toStopId), 0, i);
+                "INSERT INTO bookings (id, student_id, route_id, from_stop_id, to_stop_id, scheduled_time, points_deducted, booking_reference, status_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT id FROM booking_status_types WHERE name = 'confirmed'))",
+                bookingId, studentId, request.legs.get(0).routeId, request.legs.get(0).fromStopId, request.legs.get(0).toStopId, request.legs.get(0).scheduledTime, request.totalCost, bookingReference
+            );
+            // 7. Create transfer bookings if multiple legs
+            if (request.legs.size() > 1) {
+                for (int i = 1; i < request.legs.size(); i++) {
+                    BookingConfirmRequestDTO.Leg leg = request.legs.get(i);
+                    BookingConfirmRequestDTO.Leg prevLeg = request.legs.get(i - 1);
+                    UUID transferId = UUID.randomUUID();
+                    jdbcTemplate.update(
+                        "INSERT INTO transfer_bookings (id, main_booking_id, route_id, from_stop_id, to_stop_id, transfer_stop_id, scheduled_time, estimated_wait_time, transfer_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        transferId, bookingId, leg.routeId, leg.fromStopId, leg.toStopId, prevLeg.toStopId, leg.scheduledTime, 0, i
+                    );
+                }
             }
             // 8. Create wallet transaction record
-            UUID txId = UUID.randomUUID();
-            UUID txTypeId = jdbcTemplate.queryForObject(
-                "SELECT id FROM transaction_types WHERE name = 'debit'",
-                new Object[]{}, UUID.class);
+            UUID transactionId = UUID.randomUUID();
             jdbcTemplate.update(
-                "INSERT INTO wallet_transactions (id, student_id, transaction_type_id, amount, booking_id, description, created_at) VALUES (?, ?, ?, ?, ?, ?, now())",
-                txId, studentId, txTypeId, -request.totalCost, bookingId, "Shuttle booking");
-            // 9. Commit and return
+                "INSERT INTO wallet_transactions (id, student_id, amount, transaction_type_id, booking_id, description) VALUES (?, ?, ?, (SELECT id FROM transaction_types WHERE name = 'booking'), ?, ?)",
+                transactionId, studentId, -request.totalCost, bookingId, "Booking: " + bookingReference
+            );
+            // 9. Return success response
             result.put("success", true);
-            result.put("bookingId", bookingId);
+            result.put("bookingId", bookingId.toString());
             result.put("bookingReference", bookingReference);
-            result.put("message", "Booking confirmed");
+            result.put("message", "Booking confirmed successfully");
             return result;
         } catch (Exception e) {
             result.put("success", false);
@@ -104,6 +106,7 @@ public class StudentBookingServiceImpl implements StudentBookingService {
     }
 
     @Override
+    @Cacheable(value = "bookings", key = "'trip-history-' + #email + '-' + #limit + '-' + #offset + '-' + #fromDate + '-' + #toDate + '-' + #status")
     public List<Map<String, Object>> getTripHistory(String email, int limit, int offset, String fromDate, String toDate, String status) {
         // 1. Lookup studentId from email
         UUID studentId = jdbcTemplate.queryForObject(
@@ -161,6 +164,7 @@ public class StudentBookingServiceImpl implements StudentBookingService {
     }
 
     @Override
+    @Cacheable(value = "bookings", key = "'frequent-routes-' + #email + '-' + #limit + '-' + #fromDate + '-' + #toDate")
     public List<Map<String, Object>> getFrequentRoutes(String email, int limit, String fromDate, String toDate) {
         UUID studentId = jdbcTemplate.queryForObject(
             "SELECT id FROM students WHERE user_id = (SELECT id FROM users WHERE email = ?)",
@@ -192,6 +196,7 @@ public class StudentBookingServiceImpl implements StudentBookingService {
     }
 
     @Override
+    @Cacheable(value = "bookings", key = "'travel-analytics-' + #email + '-' + #fromDate + '-' + #toDate")
     public Map<String, Object> getTravelAnalytics(String email, String fromDate, String toDate) {
         UUID studentId = jdbcTemplate.queryForObject(
             "SELECT id FROM students WHERE user_id = (SELECT id FROM users WHERE email = ?)",
