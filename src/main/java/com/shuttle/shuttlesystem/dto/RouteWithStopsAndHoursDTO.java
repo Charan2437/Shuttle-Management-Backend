@@ -12,6 +12,7 @@ public class RouteWithStopsAndHoursDTO {
     public boolean isActive;
     public List<StopDTO> stops;
     public List<RouteOperatingHourDTO> operatingHours;
+    public String shuttleName; // Add this field for shuttle name
 
     public static class StopDTO {
         public UUID id;
